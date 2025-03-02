@@ -1,0 +1,157 @@
+---
+title: "Practice Exam"
+format: html
+editor: visual
+---
+
+```{r}
+data<-read_csv("~/Documents/Uni/Data Science/Practice Exam/sample-exam-data.csv")
+```
+cleaning the data,
+```{r}
+skimr::skim(data)
+```
+ 
+EDA
+```{r}
+ggplot(data)+
+  geom_histogram(aes(x=Y))
+ggplot(data)+
+  geom_histogram(aes(x=X1))
+ggplot(data)+
+  geom_histogram(aes(x=X2))
+ggplot(data)+
+  geom_histogram(aes(x=X3))
+ggplot(data)+
+  geom_histogram(aes(x=X4))
+
+table(data$X3)
+
+ggplot(data)+
+  geom_bar(aes(x=C1))
+ggplot(data)+
+  geom_bar(aes(x=C2))
+```
+```{r}
+data<-data|>
+  mutate(X4=ifelse(X4==99,NA,X4))
+ggplot(data)+
+  geom_histogram(aes(x=X4))
+```
+
+Bivariate
+```{r}
+ggplot(aes(x=X1, y=Y), data=data)+
+  geom_point()+
+  geom_smooth()
+ggplot(aes(x=X2, y=Y), data=data)+
+  geom_point()+
+  geom_smooth()
+ggplot(aes(x=X3, y=Y), data=data)+
+  geom_point()+
+  geom_smooth()
+ggplot(aes(x=factor(X3), y=Y), data=data)+
+  geom_boxplot()
+
+ggplot(aes(C1, Y), data=data)+
+  geom_boxplot()
+ggplot(aes(C2, Y), data=data)+
+  geom_boxplot()
+```
+
+• fitting a random forest to predict Y given the remaining variables,
+```{r}
+set.seed(2022)
+data_split<-data|>initial_split(strata=Y)
+data_train<-training(data_split)
+data_test<-testing(data_split)
+
+#data_folds<-bootstraps(data_train, strata=Y)
+data_cv <- vfold_cv(data_train, strata = Y)
+
+data_recipe<-
+  recipe(Y~ ., data=data_train)|>
+  step_other(C2)|>
+  step_nzv(all_predictors())|>
+  step_dummy(all_nominal_predictors()) %>% 
+  step_impute_mean(X4)
+
+data_recipe|>prep()|>juice()
+
+model<-
+  rand_forest(mtry=tune(),min_n=tune(),trees=1000)|>
+  set_mode("regression")|>
+  set_engine("ranger",
+             importance="permutation",
+             keep.inbag=TRUE)
+
+model_WF<-workflow()|>
+  add_recipe(data_recipe)|>
+  add_model(model)
+```
+
+• tuning of the method,
+```{r}
+doParallel::registerDoParallel()
+   df_tune <- tune_grid(
+     model_WF,
+     resamples = data_cv,
+     grid = 20
+)
+
+df_tune |> autoplot()
+
+select_best(df_tune, "rmse")
+
+best_parameters<-select_best(df_tune, "rmse")
+
+df_wf_final<-model_WF|>
+  finalize_workflow(best_parameters)
+
+data_fit<-df_wf_final|>
+  fit(data_train)
+
+data_fit|>
+  extract_fit_engine()|>
+  vip::vip()
+
+data_fit|>
+  extract_fit_engine()|>
+  vip::vi()
+```
+
+• assessing the fit of the method,
+```{r}
+data_tree_fit <- model_WF %>% 
+  fit(data) %>% extract_fit_parsnip()
+data_tree_fit
+
+show_best(df_tune, metric = 'rmse')
+
+model_WF <- model_WF |>
+     finalize_workflow(select_best(df_tune, metric = "rmse"))
+
+data_tree_fit <- model_WF |> last_fit(split = data_split) 
+data_tree_fit |> collect_metrics()
+
+data_tree_fit |> collect_predictions() |>
+     ggplot(aes(uk_viewers, .pred)) +
+     geom_point() +
+     geom_smooth(method = "lm") +
+     geom_abline(intercept = 0, slope = 1)
+
+
+
+```
+
+• choosing a single model to use for prediction,
+```{r}
+new_data<-tibble(X1=1,X2=2,X3=0.5,X4=0.5,C1="B",C2="a")
+data_fit|>predict(new_data)
+```
+
+```{r}
+last_fit(df_wf_final, data_split)|>
+  collect_metrics()
+```
+
